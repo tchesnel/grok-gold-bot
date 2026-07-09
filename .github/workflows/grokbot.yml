@@ -46,4 +46,4 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run bot once
-        run: python run_once.py
+        run: python run_once_v4.py
