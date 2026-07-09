@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+bot_stdout.log
+bot_stderr.log
+analysis_log.csv
+signals_log.csv
+latest_signal.json
+bot_control.json
