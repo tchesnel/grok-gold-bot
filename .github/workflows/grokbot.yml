@@ -45,5 +45,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Restore bot memory
+        uses: actions/cache@v4
+        with:
+          path: .bot_state
+          key: grokbot-state-${{ github.run_id }}
+          restore-keys: |
+            grokbot-state-
+
       - name: Run bot once
-        run: python run_once_v43.py
+        run: python run_once_v44.py

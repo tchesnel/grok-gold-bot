@@ -8,3 +8,5 @@ analysis_log.csv
 signals_log.csv
 latest_signal.json
 bot_control.json
+
+.bot_state/
