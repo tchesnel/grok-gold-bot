@@ -366,8 +366,8 @@ def build_signal(h4, h1, m15):
         and not h4["trend_up"]
     )
 
-    long_allowed = long_score >= 82 and (long_continuation or long_reversal)
-    short_allowed = short_score >= 82 and (short_continuation or short_reversal)
+    long_allowed = long_score >= 74 and (long_continuation or long_reversal)
+    short_allowed = short_score >= 74 and (short_continuation or short_reversal)
 
     if long_allowed and long_score >= short_score:
         side = "LONG"
