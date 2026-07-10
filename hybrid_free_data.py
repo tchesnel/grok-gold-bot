@@ -407,3 +407,133 @@ def hybrid_macro_filter():
         "short_reasons": short_reasons,
         "source": "HYBRID_FREE",
     }
+
+# === PATCH V6.3.2 — Fresh data guard + Yahoo 1m candidates ===
+from datetime import datetime as _dt, timezone as _tz
+
+class DataStaleError(RuntimeError):
+    pass
+
+
+def _age_minutes(df):
+    now = _dt.now(_tz.utc)
+    last_time = df.index[-1].to_pydatetime()
+
+    if last_time.tzinfo is None:
+        last_time = last_time.replace(tzinfo=_tz.utc)
+
+    return (now - last_time).total_seconds() / 60, last_time
+
+
+def _max_data_age_min():
+    try:
+        return float(os.getenv("MAX_DATA_AGE_MIN", "4"))
+    except Exception:
+        return 4.0
+
+
+def _ensure_fresh(df, label):
+    age, last_time = _age_minutes(df)
+    max_age = _max_data_age_min()
+
+    print(f"[FRESHNESS] {label} | dernière bougie={last_time.isoformat()} | retard={age:.1f} min | max={max_age}")
+
+    if age > max_age:
+        raise DataStaleError(f"{label} trop ancien: {age:.1f} min de retard")
+
+    return True
+
+
+def _gold_candidates():
+    raw = os.getenv("YAHOO_GOLD_CANDIDATES", "XAUUSD=X,GC=F,MGC=F")
+    items = [x.strip() for x in raw.split(",") if x.strip()]
+
+    main = os.getenv("YAHOO_GOLD_SYMBOL", "").strip()
+    if main:
+        items.insert(0, main)
+
+    out = []
+    for x in items:
+        if x not in out:
+            out.append(x)
+
+    return out
+
+
+def fetch_yahoo_all():
+    errors = []
+
+    for symbol in _gold_candidates():
+        try:
+            print(f"[YAHOO PROBE] Test source {symbol} en 1m")
+
+            m1 = yahoo_chart(symbol, "1m", "1d", cache_sec=20)
+            _ensure_fresh(m1, f"YAHOO {symbol} 1m")
+
+            m5 = resample_ohlc(m1, "5min")
+            m15 = resample_ohlc(m1, "15min")
+
+            if len(m5) < 20:
+                m5 = yahoo_chart(symbol, "5m", "5d", cache_sec=55)
+                _ensure_fresh(m5, f"YAHOO {symbol} 5m")
+
+            if len(m15) < 20:
+                m15 = yahoo_chart(symbol, "15m", "10d", cache_sec=120)
+
+            try:
+                h1 = yahoo_chart(symbol, "60m", "60d", cache_sec=240)
+            except Exception:
+                h1 = resample_ohlc(m15, "1h")
+
+            h4 = resample_ohlc(h1, "4h")
+
+            print(f"[HYBRID DATA] Source active: YAHOO {symbol} fresh")
+            return {
+                "M5": m5,
+                "5m": m5,
+                "M15": m15,
+                "15m": m15,
+                "H1": h1,
+                "1h": h1,
+                "H4": h4,
+                "4h": h4,
+            }
+
+        except Exception as e:
+            errors.append(f"{symbol}: {e}")
+            print(f"[YAHOO PROBE] {symbol} refusé: {e}")
+
+    raise DataStaleError("Aucune source Yahoo assez fraîche: " + " | ".join(errors))
+
+
+def fetch_hybrid_all():
+    errors = []
+
+    sources = ["OANDA", "YAHOO"] if HYBRID_PRIMARY == "OANDA" else ["YAHOO", "OANDA"]
+
+    for src in sources:
+        try:
+            if src == "OANDA":
+                frames = fetch_oanda_all()
+                _ensure_fresh(frames["M5"], "OANDA M5")
+            else:
+                frames = fetch_yahoo_all()
+
+            print(f"[HYBRID DATA] Source active: {src}")
+            return frames
+
+        except Exception as e:
+            errors.append(f"{src}: {e}")
+            print(f"[HYBRID DATA] {src} indisponible: {e}")
+
+    raise DataStaleError("Toutes les sources sont trop anciennes/indisponibles: " + " | ".join(errors))
+
+
+def fetch_hybrid_m5():
+    try:
+        frames = fetch_hybrid_all()
+        print("[HYBRID M5] Fresh source")
+        return frames["M5"]
+    except Exception as e:
+        print(f"[HYBRID M5] fail: {e}")
+        return None
