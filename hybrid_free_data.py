@@ -537,3 +537,212 @@ def fetch_hybrid_m5():
     except Exception as e:
         print(f"[HYBRID M5] fail: {e}")
         return None
+
+# === PATCH V6.4 — Twelve Data primary + Finnhub fallback ===
+ORIGINAL_TWELVE_FETCH_FRAMES = None
+ORIGINAL_TWELVE_FETCH_M5 = None
+
+
+def _source_chain():
+    raw = os.getenv("DATA_CHAIN", "TWELVE,FINNHUB,YAHOO")
+    return [x.strip().upper() for x in raw.split(",") if x.strip()]
+
+
+def fetch_twelve_all():
+    if ORIGINAL_TWELVE_FETCH_FRAMES is None:
+        raise RuntimeError("Twelve original fetch_frames non disponible")
+
+    frames = ORIGINAL_TWELVE_FETCH_FRAMES()
+
+    if "M5" in frames:
+        _ensure_fresh(frames["M5"], "TWELVE M5")
+    elif "5m" in frames:
+        _ensure_fresh(frames["5m"], "TWELVE 5m")
+
+    print("[HYBRID DATA] Source active: TWELVE DATA")
+    return frames
+
+
+def fetch_twelve_m5():
+    if ORIGINAL_TWELVE_FETCH_M5 is None:
+        raise RuntimeError("Twelve original M5 non disponible")
+
+    df = ORIGINAL_TWELVE_FETCH_M5()
+
+    if df is None:
+        raise RuntimeError("Twelve M5 vide")
+
+    _ensure_fresh(df, "TWELVE M5")
+    print("[HYBRID M5] TWELVE DATA")
+    return df
+
+
+def _finnhub_token():
+    return os.getenv("FINNHUB_API_TOKEN", "").strip()
+
+
+def _finnhub_symbols():
+    raw = os.getenv("FINNHUB_SYMBOLS", "OANDA:XAU_USD,FXCM:XAU/USD,FOREXCOM:XAUUSD,OANDA:XAUUSD")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def finnhub_candles(symbol, resolution="5", days=7, cache_sec=45):
+    token = _finnhub_token()
+
+    if not token:
+        raise RuntimeError("FINNHUB_API_TOKEN absent")
+
+    key = f"finnhub_{symbol}_{resolution}_{days}"
+    cached = _read_cache(key, max_age_sec=cache_sec)
+
+    if cached:
+        return _payload_to_df(cached)
+
+    import time as _time
+
+    to_ts = int(_time.time())
+    from_ts = to_ts - int(days * 24 * 60 * 60)
+
+    url = "https://finnhub.io/api/v1/forex/candle"
+
+    params = {
+        "symbol": symbol,
+        "resolution": resolution,
+        "from": from_ts,
+        "to": to_ts,
+        "token": token,
+    }
+
+    r = requests.get(url, params=params, timeout=10, headers={"User-Agent": USER_AGENT})
+
+    if r.status_code != 200:
+        raise RuntimeError(f"Finnhub HTTP {r.status_code}: {r.text[:300]}")
+
+    js = r.json()
+
+    if js.get("s") != "ok":
+        raise RuntimeError(f"Finnhub no data {symbol} {resolution}: {js}")
+
+    ts = js.get("t", [])
+
+    if not ts:
+        raise RuntimeError(f"Finnhub candles vides {symbol} {resolution}")
+
+    df = pd.DataFrame({
+        "open": js.get("o", []),
+        "high": js.get("h", []),
+        "low": js.get("l", []),
+        "close": js.get("c", []),
+        "volume": js.get("v", [0] * len(ts)),
+    }, index=pd.to_datetime(ts, unit="s", utc=True))
+
+    df = df.dropna(subset=["open", "high", "low", "close"])
+
+    for c in ["open", "high", "low", "close", "volume"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.dropna(subset=["open", "high", "low", "close"])
+
+    if len(df) < 20:
+        raise RuntimeError(f"Finnhub pas assez de bougies {symbol} {resolution}")
+
+    _write_cache(key, _df_to_payload(df))
+    return df
+
+
+def fetch_finnhub_all():
+    errors = []
+
+    for symbol in _finnhub_symbols():
+        try:
+            print(f"[FINNHUB PROBE] Test {symbol}")
+
+            m5 = finnhub_candles(symbol, "5", days=7, cache_sec=45)
+            _ensure_fresh(m5, f"FINNHUB {symbol} M5")
+
+            try:
+                m15 = finnhub_candles(symbol, "15", days=20, cache_sec=90)
+            except Exception:
+                m15 = resample_ohlc(m5, "15min")
+
+            try:
+                h1 = finnhub_candles(symbol, "60", days=90, cache_sec=180)
+            except Exception:
+                h1 = resample_ohlc(m15, "1h")
+
+            h4 = resample_ohlc(h1, "4h")
+
+            print(f"[HYBRID DATA] Source active: FINNHUB {symbol}")
+
+            return {
+                "M5": m5,
+                "5m": m5,
+                "M15": m15,
+                "15m": m15,
+                "H1": h1,
+                "1h": h1,
+                "H4": h4,
+                "4h": h4,
+            }
+
+        except Exception as e:
+            errors.append(f"{symbol}: {e}")
+            print(f"[FINNHUB PROBE] {symbol} refusé: {e}")
+
+    raise RuntimeError("Finnhub indisponible: " + " | ".join(errors))
+
+
+def fetch_hybrid_all():
+    errors = []
+
+    for src in _source_chain():
+        try:
+            if src == "TWELVE":
+                frames = fetch_twelve_all()
+            elif src == "FINNHUB":
+                frames = fetch_finnhub_all()
+            elif src == "OANDA":
+                frames = fetch_oanda_all()
+                _ensure_fresh(frames["M5"], "OANDA M5")
+            elif src == "YAHOO":
+                frames = fetch_yahoo_all()
+            else:
+                continue
+
+            print(f"[HYBRID DATA] Source finale: {src}")
+            return frames
+
+        except Exception as e:
+            errors.append(f"{src}: {e}")
+            print(f"[HYBRID DATA] {src} indisponible: {e}")
+
+    raise DataStaleError("Toutes les sources sont indisponibles: " + " | ".join(errors))
+
+
+def fetch_hybrid_m5():
+    errors = []
+
+    for src in _source_chain():
+        try:
+            if src == "TWELVE":
+                return fetch_twelve_m5()
+            elif src == "FINNHUB":
+                frames = fetch_finnhub_all()
+                print("[HYBRID M5] FINNHUB")
+                return frames["M5"]
+            elif src == "OANDA":
+                df = oanda_candles("M5", 500, cache_sec=50)
+                _ensure_fresh(df, "OANDA M5")
+                print("[HYBRID M5] OANDA")
+                return df
+            elif src == "YAHOO":
+                frames = fetch_yahoo_all()
+                print("[HYBRID M5] YAHOO")
+                return frames["M5"]
+
+        except Exception as e:
+            errors.append(f"{src}: {e}")
+            print(f"[HYBRID M5] {src} fail: {e}")
+
+    print("[HYBRID M5] aucune source:", " | ".join(errors))
+    return None
