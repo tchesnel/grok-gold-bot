@@ -351,3 +351,59 @@ def hybrid_macro_filter():
         "tnx_bias": tnx_bias,
         "source": "HYBRID_FREE",
     }
+
+# === PATCH V6.3.1 — compatibilité score_signal ===
+def hybrid_macro_filter():
+    dxy_bias = "NEUTRAL"
+    tnx_bias = "NEUTRAL"
+
+    try:
+        dxy = yahoo_chart(YAHOO_DXY_SYMBOL, "15m", "5d", cache_sec=900)
+        dxy_bias = simple_bias(dxy)
+    except Exception as e:
+        print(f"[HYBRID MACRO] DXY fail: {e}")
+
+    try:
+        tnx = yahoo_chart(YAHOO_US10Y_SYMBOL, "15m", "5d", cache_sec=900)
+        tnx_bias = simple_bias(tnx)
+    except Exception as e:
+        print(f"[HYBRID MACRO] US10Y fail: {e}")
+
+    long_bonus = 0
+    short_bonus = 0
+    long_reasons = []
+    short_reasons = []
+
+    # Logique macro pour l'or :
+    # DXY baisse = favorable à l'or
+    # DXY monte = pression baissière sur l'or
+    if dxy_bias == "DOWN":
+        long_bonus += 8
+        long_reasons.append("DXY baissier, favorable à l’or")
+    elif dxy_bias == "UP":
+        short_bonus += 8
+        short_reasons.append("DXY haussier, pression baissière sur l’or")
+
+    # US10Y baisse = favorable à l'or
+    # US10Y monte = pression baissière sur l'or
+    if tnx_bias == "DOWN":
+        long_bonus += 5
+        long_reasons.append("US10Y baissier, favorable à l’or")
+    elif tnx_bias == "UP":
+        short_bonus += 5
+        short_reasons.append("US10Y haussier, pression baissière sur l’or")
+
+    print(
+        f"[HYBRID MACRO] DXY={dxy_bias} | US10Y={tnx_bias} | "
+        f"LongBonus={long_bonus} | ShortBonus={short_bonus}"
+    )
+
+    return {
+        "dxy_bias": dxy_bias,
+        "tnx_bias": tnx_bias,
+        "long_bonus": long_bonus,
+        "short_bonus": short_bonus,
+        "long_reasons": long_reasons,
+        "short_reasons": short_reasons,
+        "source": "HYBRID_FREE",
+    }
